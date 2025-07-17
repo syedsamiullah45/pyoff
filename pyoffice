@@ -1,0 +1,1715 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog, colorchooser, simpledialog, scrolledtext
+from tkinter import font as tkfont
+import csv
+import os
+import re
+import math
+import socket
+import threading
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from textblob import TextBlob
+import pyttsx3
+from PIL import Image, ImageTk, ImageDraw, ImageFont, ImageGrab
+import nltk
+from nltk.tokenize import sent_tokenize
+import io
+import traceback
+import tempfile
+import json
+from pathlib import Path
+from reportlab.lib.pagesizes import landscape, A4
+from reportlab.pdfgen import canvas as pdf_canvas
+from reportlab.lib.utils import ImageReader
+
+# Download NLTK data
+try:
+    nltk.download('punkt', quiet=True)
+except Exception:
+    print("Failed to download 'punkt' for grammar check")
+
+# Function for the splash screen
+def show_splash_screen(root):
+    splash = tk.Toplevel()
+    splash.title("PyOffice Pro")
+    splash.overrideredirect(True)
+    splash.configure(bg="black")
+
+    width, height = 500, 300
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    x = (screen_width - width) // 2
+    y = (screen_height - height) // 2
+    splash.geometry(f"{width}x{height}+{x}+{y}")
+
+    # Neon-style text
+    label1 = tk.Label(splash, text="PYOFFICE PRO", fg="#0ff", bg="black",
+                      font=("Consolas", 28, "bold"), 
+                      padx=20, pady=10)
+    label1.pack(pady=(40, 10))
+    
+    # Add glow effect
+    for i in range(3, 0, -1):
+        glow = tk.Label(splash, text="PYOFFICE PRO", fg=f"#{i}{i}f", bg="black",
+                        font=("Consolas", 28, "bold"))
+        glow.place(x=width//2, y=height//2-40, anchor="center")
+
+    label2 = tk.Label(splash, text="by Syed Samiullah", fg="white", bg="black",
+                      font=("Consolas", 16))
+    label2.pack()
+
+    label3 = tk.Label(splash, text="github.com/syedsamiullah45", fg="#aaa", bg="black",
+                      font=("Consolas", 12, "italic"))
+    label3.pack(pady=(10, 0))
+
+    # Progress bar
+    progress = ttk.Progressbar(splash, orient="horizontal", 
+                              length=300, mode="determinate")
+    progress.pack(pady=20)
+    progress.start(10)
+
+    # Auto-close after 2.5 seconds
+    root.after(2500, splash.destroy)
+
+class PyOfficePro:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("PyOffice Pro")
+        self.root.geometry("1400x900")
+        self.root.configure(bg="#f0f0f0")
+        
+        # Networking for collaboration
+        self.host = 'localhost'
+        self.port = 65432
+        self.is_host = False
+        self.client_socket = None
+        self.server_socket = None
+        
+        # Pandas DataFrame for spreadsheet data
+        self.df = pd.DataFrame()
+        
+        # Slide images for Slide Pro
+        self.slide_images = {} 
+        
+        # Dragging data for canvas images (Slide Pro)
+        self.canvas_images = {}
+        self.drag_data = {"img_id": None, "x": 0, "y": 0} 
+
+        # For Word Pro image resizing
+        self.selected_word_image = None
+
+        # List to keep track of temporary image files for cleanup
+        self.temp_image_files = []
+        
+        # Voice Notes attribute
+        self.is_recording = False
+
+        # Set up UI
+        self.setup_ui()
+        
+        # Global Keyboard Shortcuts
+        self.root.bind('<Control-s>', lambda e: self.save_word_doc())
+        self.root.bind('<Control-o>', lambda e: self.load_word_doc())
+        self.root.bind('<Control-b>', lambda e: self.toggle_bold())
+        self.root.bind('<Control-i>', lambda e: self.toggle_italic())
+        self.root.bind('<Control-u>', lambda e: self.toggle_underline())
+        self.root.bind('<Control-v>', self.handle_paste_image)
+        
+        # Bind the cleanup function to window close event
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def on_closing(self):
+        """Cleans up temporary files before closing the application."""
+        for temp_file in self.temp_image_files:
+            try:
+                os.remove(temp_file)
+            except OSError as e:
+                print(f"Error removing temporary file {temp_file}: {e}")
+        self.root.destroy()
+
+    def setup_ui(self):
+        # Style & Theme
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+        self.set_light_theme()
+        self.current_theme = "light"
+        
+        # Main Notebook (Tabs)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Frames for each app
+        self.word_frame = ttk.Frame(self.notebook)
+        self.spreadsheet_frame = ttk.Frame(self.notebook)
+        self.slide_frame = ttk.Frame(self.notebook)
+        
+        self.notebook.add(self.word_frame, text="📝 Word Pro")
+        self.notebook.add(self.spreadsheet_frame, text="📊 Spreadsheet Pro")
+        self.notebook.add(self.slide_frame, text="📽️ Slide Pro")
+        
+        # Initialize apps
+        self.create_word_processor()
+        self.create_spreadsheet()
+        self.create_slide_creator()
+        
+        # Status Bar
+        self.status_bar = ttk.Label(self.root, text="Ready | Offline", relief="sunken", anchor="w")
+        self.status_bar.pack(side="bottom", fill="x")
+        
+        # Theme Toggle
+        self.theme_button = ttk.Button(self.root, text="🌙 Dark Mode", command=self.toggle_theme)
+        self.theme_button.pack(side="bottom", pady=5)
+        
+        # Collaboration Button
+        self.collab_button = ttk.Button(self.root, text="🌐 Start Collaboration", command=self.toggle_collaboration)
+        self.collab_button.pack(side="bottom", pady=2)
+
+        # Main menu bar
+        self.menubar = tk.Menu(self.root)
+        self.root.config(menu=self.menubar)
+        
+        # File menu
+        file_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Exit", command=self.root.destroy)
+        
+        # Help menu
+        help_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="About", command=self.show_about)
+    
+    # ========================
+    # THEME & UI FUNCTIONS
+    # ========================
+    def set_light_theme(self):
+        self.style.configure(".", background="#f0f0f0", foreground="black")
+        self.style.configure("TFrame", background="#f0f0f0")
+        self.style.configure("TButton", background="#e1e1e1", foreground="black")
+        self.style.configure("TLabel", background="#f0f0f0", foreground="black")
+        self.style.configure("TNotebook", background="#f0f0f0")
+        self.style.configure("TNotebook.Tab", background="#d0d0d0", foreground="black")
+        self.style.configure("Treeview", background="white", foreground="black", fieldbackground="white")
+        self.style.configure("Treeview.Heading", background="#d0d0d0", foreground="black")
+        self.style.map("Treeview", background=[("selected", "#4a6987")])
+        self.style.configure("TEntry", fieldbackground="white")
+        self.style.configure("TCombobox", fieldbackground="white")
+        
+    def set_dark_theme(self):
+        self.style.configure(".", background="#2d2d30", foreground="white")
+        self.style.configure("TFrame", background="#2d2d30")
+        self.style.configure("TButton", background="#3e3e42", foreground="white")
+        self.style.configure("TLabel", background="#2d2d30", foreground="white")
+        self.style.configure("TNotebook", background="#2d2d30")
+        self.style.configure("TNotebook.Tab", background="#3e3e42", foreground="white")
+        self.style.configure("Treeview", background="#252526", foreground="white", fieldbackground="#252526")
+        self.style.configure("Treeview.Heading", background="#3e3e42", foreground="white")
+        self.style.map("Treeview", background=[("selected", "#4a6987")])
+        self.style.configure("TEntry", fieldbackground="#333333")
+        self.style.configure("TCombobox", fieldbackground="#333333")
+    
+    def toggle_theme(self):
+        if self.current_theme == "light":
+            self.set_dark_theme()
+            self.current_theme = "dark"
+            self.theme_button.config(text="☀️ Light Mode")
+        else:
+            self.set_light_theme()
+            self.current_theme = "light"
+            self.theme_button.config(text="🌙 Dark Mode")
+    
+    def update_status(self, message):
+        self.status_bar.config(text=message)
+        self.root.after(3000, lambda: self.status_bar.config(text="Ready") if self.status_bar.cget("text") == message else None)
+    
+    # Tooltip helper function
+    def create_tooltip(self, widget, text):
+        tool_tip = None
+        def enter(event):
+            nonlocal tool_tip
+            tool_tip = tk.Toplevel(widget)
+            tool_tip.wm_overrideredirect(True)
+            tool_tip.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
+            label = tk.Label(tool_tip, text=text, background="#ffffe0", relief="solid", borderwidth=1,
+                             font=("tahoma", "8", "normal"))
+            label.pack(ipadx=1)
+        def leave(event):
+            nonlocal tool_tip
+            if tool_tip:
+                tool_tip.destroy()
+            tool_tip = None
+        widget.bind("<Enter>", enter)
+        widget.bind("<Leave>", leave)
+
+    # ========================
+    # REAL-TIME COLLABORATION
+    # ========================
+    def toggle_collaboration(self):
+        if not self.is_host and self.client_socket is None:
+            self.start_collab_server()
+        else:
+            self.stop_collab()
+    
+    def start_collab_server(self):
+        try:
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen(1)
+            self.is_host = True
+            threading.Thread(target=self.accept_connections, daemon=True).start()
+            self.update_status("Collaboration: Hosting on LAN...")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to start server:\n{str(e)}")
+            print(traceback.format_exc())
+    
+    def accept_connections(self):
+        try:
+            conn, addr = self.server_socket.accept()
+            self.client_socket = conn
+            self.update_status(f"Collaboration: Connected to {addr}")
+            threading.Thread(target=self.receive_data, daemon=True).start()
+        except Exception as e:
+            print(f"Error accepting connection: {e}")
+            print(traceback.format_exc())
+            self.update_status("Collaboration: Server stopped")
+            self.stop_collab()
+    
+    def receive_data(self):
+        while True:
+            try:
+                data = self.client_socket.recv(1024).decode()
+                if data.startswith("TEXT_UPDATE:"):
+                    new_text = data[len("TEXT_UPDATE:"):]
+                    self.text_area.delete(1.0, tk.END)
+                    self.text_area.insert(1.0, new_text)
+            except:
+                self.update_status("Collaboration: Connection lost or host closed")
+                break
+    
+    def send_data(self, text):
+        if self.client_socket:
+            try:
+                self.client_socket.sendall(f"TEXT_UPDATE:{text}".encode())
+            except Exception as e:
+                self.update_status("Collaboration: Connection lost")
+                print(f"Error sending data: {e}")
+                print(traceback.format_exc())
+    
+    def stop_collab(self):
+        if self.client_socket:
+            self.client_socket.close()
+        if self.server_socket:
+            self.server_socket.close()
+        self.is_host = False
+        self.client_socket = None
+        self.server_socket = None
+        self.update_status("Collaboration: Offline")
+    
+    # ========================
+    # WORD PROCESSOR FUNCTIONS
+    # ========================
+    def create_word_processor(self):
+        # Create toolbar
+        toolbar = ttk.Frame(self.word_frame)
+        toolbar.pack(fill="x", padx=5, pady=5)
+        
+        # File operations
+        ttk.Button(toolbar, text="📂 Open", command=self.open_document).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="💾 Save", command=self.save_document).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="💾 Save .wdoc", command=self.save_word_doc).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="📂 Load .wdoc", command=self.load_word_doc).pack(side="left", padx=2)
+        
+        # Formatting buttons
+        format_frame = ttk.Frame(toolbar)
+        format_frame.pack(side="left", padx=10)
+        
+        bold_btn = ttk.Button(format_frame, text="B", command=lambda: self.format_text("bold"), width=2)
+        bold_btn.pack(side="left", padx=2)
+        self.create_tooltip(bold_btn, "Bold (Ctrl+B)")
+
+        italic_btn = ttk.Button(format_frame, text="I", command=lambda: self.format_text("italic"), width=2)
+        italic_btn.pack(side="left", padx=2)
+        self.create_tooltip(italic_btn, "Italic (Ctrl+I)")
+
+        underline_btn = ttk.Button(format_frame, text="U", command=lambda: self.format_text("underline"), width=2)
+        underline_btn.pack(side="left", padx=2)
+        self.create_tooltip(underline_btn, "Underline (Ctrl+U)")
+        
+        # Font selection
+        self.font_family = tk.StringVar(value="Arial")
+        font_combo = ttk.Combobox(format_frame, textvariable=self.font_family, width=12, state="readonly")
+        font_combo['values'] = ('Arial', 'Times New Roman', 'Courier New', 'Georgia', 'Verdana', 'Comic Sans MS')
+        font_combo.pack(side="left", padx=2)
+        font_combo.bind("<<ComboboxSelected>>", lambda e: self.format_text("font"))
+        
+        # Font size
+        self.font_size = tk.StringVar(value="12")
+        size_combo = ttk.Combobox(format_frame, textvariable=self.font_size, width=3, state="readonly")
+        size_combo['values'] = tuple(str(i) for i in range(8, 33, 2))
+        size_combo.pack(side="left", padx=2)
+        size_combo.bind("<<ComboboxSelected>>", lambda e: self.format_text("size"))
+        
+        # Font color
+        ttk.Button(format_frame, text="Color", command=self.choose_text_color).pack(side="left", padx=2)
+        
+        # Alignment
+        align_frame = ttk.Frame(toolbar)
+        align_frame.pack(side="left", padx=10)
+        
+        ttk.Button(align_frame, text="Left", command=lambda: self.align_text("left")).pack(side="left", padx=2)
+        ttk.Button(align_frame, text="Center", command=lambda: self.align_text("center")).pack(side="left", padx=2)
+        ttk.Button(align_frame, text="Right", command=lambda: self.align_text("right")).pack(side="left", padx=2)
+        
+        # Insert Image button for Word Processor
+        ttk.Button(toolbar, text="🖼️ Insert Image", command=self.insert_image).pack(side="left", padx=10) 
+        
+        # Insert Table button for Word Processor
+        ttk.Button(toolbar, text="🧮 Insert Table", command=self.insert_table).pack(side="left", padx=2)
+
+        # Advanced tools
+        tools_frame = ttk.Frame(toolbar)
+        tools_frame.pack(side="left", padx=10)
+        
+        ttk.Button(tools_frame, text="Spell Check", command=self.spell_check).pack(side="left", padx=2)
+        ttk.Button(tools_frame, text="Grammar Check", command=self.check_grammar).pack(side="left", padx=2)
+        ttk.Button(tools_frame, text="Read Aloud", command=self.read_aloud).pack(side="left", padx=2)
+        ttk.Button(tools_frame, text="🎙️ Voice Notes", command=self.toggle_voice_notes).pack(side="left", padx=2)
+
+        # Create text area with scrollbar
+        text_frame = ttk.Frame(self.word_frame)
+        text_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        self.text_area = scrolledtext.ScrolledText(
+            text_frame, wrap="word", font=("Arial", 12), undo=True
+        )
+        self.text_area.pack(fill="both", expand=True)
+        
+        # Voice Notes display area (initially hidden)
+        self.notes_frame = ttk.Frame(self.word_frame, relief="groove", borderwidth=2)
+        
+        ttk.Label(self.notes_frame, text="Voice Notes:").pack(side="top", anchor="w", padx=5, pady=2)
+        self.notes_text = tk.Text(self.notes_frame, wrap="word", height=5, state="disabled")
+        self.notes_text.pack(fill="x", padx=5, pady=2)
+        
+        voice_btn_frame = ttk.Frame(self.notes_frame)
+        voice_btn_frame.pack(fill="x", padx=5, pady=2)
+        self.start_voice_btn = ttk.Button(voice_btn_frame, text="Start Recording", command=self.start_voice_notes)
+        self.start_voice_btn.pack(side="left", padx=2)
+        self.stop_voice_btn = ttk.Button(voice_btn_frame, text="Stop Recording", command=self.stop_voice_notes, state="disabled")
+        self.stop_voice_btn.pack(side="left", padx=2)
+        
+        # Status bar for word processor
+        self.wp_status = ttk.Label(self.word_frame, text="Words: 0 | Characters: 0 | Lines: 0")
+        self.wp_status.pack(side="bottom", fill="x", padx=5, pady=2)
+        
+        # Bind events for word count
+        self.text_area.bind("<KeyRelease>", self.update_word_count)
+        self.text_area.bind("<ButtonRelease>", self.update_word_count)
+        
+        # Word Pro image resizing bindings
+        self.text_area.bind("<MouseWheel>", self.resize_word_image)
+        self.text_area.bind("<Button-1>", self.select_word_image)
+
+        # Set initial values
+        self.update_word_count()
+
+    def insert_image(self): 
+        file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif")]) 
+        if file_path: 
+            try:
+                image = Image.open(file_path) 
+                image = image.resize((300, 200)) 
+                tk_image = ImageTk.PhotoImage(image) 
+                tk_image.source_path = file_path
+                if not hasattr(self, 'image_refs'): 
+                    self.image_refs = [] 
+                self.image_refs.append(tk_image) 
+                self.text_area.image_create(tk.INSERT, image=tk_image) 
+                self.text_area.insert(tk.INSERT, "\n")
+                self.update_status("Image inserted into Word")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to insert image:\n{str(e)}")
+                print(traceback.format_exc())
+
+    def select_word_image(self, event):
+        try:
+            index = self.text_area.index(f"@{event.x},{event.y}")
+            img_cget_name = self.text_area.image_cget(index)
+            
+            self.selected_word_image = None
+            if hasattr(self, 'image_refs'):
+                for img_ref in self.image_refs:
+                    if str(img_ref) == img_cget_name:
+                        self.selected_word_image = img_ref
+                        break
+        except tk.TclError:
+            self.selected_word_image = None
+        except Exception as e:
+            print(f"Error selecting image: {e}")
+            print(traceback.format_exc())
+            self.selected_word_image = None
+
+    def resize_word_image(self, event):
+        if not event.state & 0x0004:  # Ctrl key must be held
+            return
+        
+        img_to_resize = self.selected_word_image
+        if not img_to_resize:
+            self.update_status("No image selected for resizing.")
+            return
+        
+        # Check if the image has a source_path for PIL.Image.open
+        if not hasattr(img_to_resize, 'source_path') or img_to_resize.source_path is None:
+            messagebox.showwarning("Resize Error", "Cannot resize image without original source path.")
+            return
+
+        try:
+            # Find the current insertion point
+            img_indexes = self.text_area.image_names(index="1.0", index2=tk.END)
+            current_img_index = None
+            for tag in img_indexes:
+                if str(img_to_resize) == self.text_area.image_cget(tag):
+                    current_img_index = tag
+                    break
+
+            if not current_img_index:
+                self.update_status("Could not find the image's current position to resize.")
+                return
+
+            pil_img = Image.open(img_to_resize.source_path)
+            scale = 1.1 if event.delta > 0 else 0.9
+            new_size = (
+                max(50, int(pil_img.width * scale)),
+                max(50, int(pil_img.height * scale))
+            )
+            pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
+            new_tk_img = ImageTk.PhotoImage(pil_img)
+            new_tk_img.source_path = img_to_resize.source_path
+            
+            # Replace the old PhotoImage object in image_refs with the new one
+            try:
+                idx_in_refs = self.image_refs.index(img_to_resize)
+                self.image_refs[idx_in_refs] = new_tk_img
+            except ValueError:
+                self.image_refs.append(new_tk_img)
+
+            # Delete the old image from the text widget and insert the new one
+            self.text_area.delete(current_img_index)
+            self.text_area.image_create(current_img_index, image=new_tk_img)
+            
+            self.selected_word_image = new_tk_img
+            self.update_status("Image resized in Word Pro.")
+        except Exception as e:
+            messagebox.showerror("Resize failed", f"Could not resize image:\n{e}")
+            print(traceback.format_exc())
+
+    def handle_paste_image(self, event=None):
+        try:
+            image = ImageGrab.grabclipboard()
+            if image is None:
+                messagebox.showinfo("Paste Image", "Clipboard is empty or does not contain an image.")
+                return
+
+            if isinstance(image, Image.Image):
+                # Save clipboard image to a temporary file
+                temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                image.save(temp_file.name)
+                temp_file.close()
+                self.temp_image_files.append(temp_file.name)
+
+                # Resize for insertion display
+                image = image.resize((300, 200), Image.Resampling.LANCZOS)
+                tk_img = ImageTk.PhotoImage(image)
+                tk_img.source_path = temp_file.name
+
+                # Where to paste? 
+                if hasattr(self, "text_area") and self.notebook.tab(self.notebook.select(), "text") == "📝 Word Pro":
+                    if not hasattr(self, 'image_refs'):
+                        self.image_refs = []
+                    self.image_refs.append(tk_img)
+                    self.text_area.image_create(tk.INSERT, image=tk_img)
+                    self.text_area.insert(tk.INSERT, "\n")
+                    self.update_status("📋 Image pasted into Word")
+
+                # If Slide Pro is active:
+                elif hasattr(self, "preview_canvas") and self.notebook.tab(self.notebook.select(), "text") == "📽️ Slide Pro":
+                    slide_index = self.current_slide
+                    if not hasattr(self, "slide_images"):
+                        self.slide_images = {}
+                    self.slide_images.setdefault(slide_index, []).append((tk_img, 0.5, 0.55))
+                    self.update_preview()
+                    self.update_status("📋 Image pasted into Slide")
+        except Exception as e:
+            messagebox.showerror("Paste Error", f"Could not paste image:\n{e}")
+            print(traceback.format_exc())
+
+    def save_word_doc(self):
+        file_path = filedialog.asksaveasfilename(defaultextension=".wdoc",
+                                             filetypes=[("Word Doc", "*.wdoc")])
+        if not file_path:
+            return
+
+        content = self.text_area.get("1.0", tk.END)
+        images = []
+        if hasattr(self, 'image_refs'):
+            for img in self.image_refs:
+                path = getattr(img, "source_path", None)
+                if path:
+                    images.append(path)
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("##__TEXT__##\n")
+                f.write(content)
+                f.write("##__IMAGES__##\n")
+                for path in images:
+                    f.write(path + "\n")
+
+            self.update_status("Word document saved.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save document:\n{str(e)}")
+            print(traceback.format_exc())
+
+    def load_word_doc(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Word Doc", "*.wdoc")])
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            text = ""
+            img_paths = []
+            mode = None
+            for line in lines:
+                if line.strip() == "##__TEXT__##":
+                    mode = "text"
+                    continue
+                elif line.strip() == "##__IMAGES__##":
+                    mode = "images"
+                    continue
+                if mode == "text":
+                    text += line
+                elif mode == "images":
+                    img_paths.append(line.strip())
+
+            self.text_area.delete("1.0", tk.END)
+            self.text_area.insert(tk.END, text)
+
+            self.image_refs = [] # Clear existing image references
+            for path in img_paths:
+                if os.path.exists(path):
+                    pil_img = Image.open(path)
+                    pil_img = pil_img.resize((300, 200), Image.Resampling.LANCZOS)
+                    tk_img = ImageTk.PhotoImage(pil_img)
+                    tk_img.source_path = path
+                    self.image_refs.append(tk_img)
+                    self.text_area.image_create(tk.END, image=tk_img)
+                    self.text_area.insert(tk.END, "\n")
+                else:
+                    self.update_status(f"Warning: Image not found at {path}")
+
+            self.update_status("Word document loaded.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load document:\n{str(e)}")
+            print(traceback.format_exc())
+
+    # Wrapper methods for keyboard shortcuts
+    def toggle_bold(self):
+        self.format_text("bold")
+        self.update_status("Toggled bold")
+
+    def toggle_italic(self):
+        self.format_text("italic")
+        self.update_status("Toggled italic")
+
+    def toggle_underline(self):
+        self.format_text("underline")
+        self.update_status("Toggled underline")
+
+    def insert_table(self):
+        """Popup dialog to build a simple ASCII table and insert it."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Insert Table")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Rows:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        ttk.Label(dialog, text="Columns:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+
+        rows_var = tk.IntVar(value=3)
+        cols_var = tk.IntVar(value=3)
+        rows_spin = ttk.Spinbox(dialog, from_=1, to=20, textvariable=rows_var, width=5)
+        cols_spin = ttk.Spinbox(dialog, from_=1, to=10, textvariable=cols_var, width=5)
+        rows_spin.grid(row=0, column=1, padx=5, pady=5)
+        cols_spin.grid(row=1, column=1, padx=5, pady=5)
+
+        def build_editor():
+            r = rows_var.get()
+            c = cols_var.get()
+            if r <= 0 or c <= 0:
+                return
+            # Destroy initial controls
+            for w in dialog.winfo_children():
+                w.destroy()
+
+            data = [[tk.StringVar() for _ in range(c)] for _ in range(r)]
+
+            # grid of entries
+            for i in range(r):
+                for j in range(c):
+                    e = ttk.Entry(dialog, textvariable=data[i][j], width=12)
+                    e.grid(row=i, column=j, padx=2, pady=2)
+
+            def insert_ascii():
+                # calculate col widths
+                widths = [ max(len(data[i][j].get()) for i in range(r)) for j in range(c) ]
+                sep = "+" + "+".join("-"*(w+2) for w in widths) + "+\n"
+
+                def build_row(vals):
+                    return "| " + " | ".join( val.ljust(widths[idx]) for idx,val in enumerate(vals) ) + " |\n"
+
+                table_txt = sep
+                for i in range(r):
+                    vals = [data[i][j].get() for j in range(c)]
+                    table_txt += build_row(vals)
+                    table_txt += sep
+
+                # insert into text widget
+                self.text_area.insert(tk.INSERT, table_txt)
+                self.update_status("Table inserted")
+                dialog.destroy()
+
+            ttk.Button(dialog, text="Insert Table", command=insert_ascii)\
+                .grid(row=r, columnspan=c, pady=8)
+
+        ttk.Button(dialog, text="Create Grid", command=build_editor)\
+            .grid(row=2, columnspan=2, pady=8)
+
+        dialog.columnconfigure(1, weight=1)
+
+    def open_document(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
+        )
+        if file_path:
+            try:
+                with open(file_path, "r") as file:
+                    self.text_area.delete(1.0, tk.END)
+                    self.text_area.insert(1.0, file.read())
+                self.update_status(f"Document opened: {os.path.basename(file_path)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to open document:\n{str(e)}")
+                print(traceback.format_exc())
+    
+    def save_document(self):
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
+        )
+        if file_path:
+            try:
+                with open(file_path, "w") as file:
+                    file.write(self.text_area.get(1.0, tk.END))
+                self.update_status(f"Document saved: {os.path.basename(file_path)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save document:\n{str(e)}")
+                print(traceback.format_exc())
+    
+    def format_text(self, format_type):
+        try:
+            if not self.text_area.tag_ranges(tk.SEL):
+                self.update_status("Select text to format")
+                return
+
+            start, end = tk.SEL_FIRST, tk.SEL_LAST
+            
+            # Get current font attributes
+            current_font_obj = tkfont.Font(self.text_area, self.text_area.cget("font"))
+            family = current_font_obj.actual("family")
+            size = current_font_obj.actual("size")
+            weight = current_font_obj.actual("weight")
+            slant = current_font_obj.actual("slant")
+            underline = current_font_obj.actual("underline")
+            
+            # Apply formatting
+            if format_type == "bold":
+                weight = "normal" if weight == "bold" else "bold"
+            elif format_type == "italic":
+                slant = "roman" if slant == "italic" else "italic"
+            elif format_type == "underline":
+                underline = not underline
+            elif format_type == "size":
+                size = int(self.font_size.get())
+            elif format_type == "font":
+                family = self.font_family.get()
+
+            # Create a unique tag name
+            tag_name = f"font_{family}_{size}_{weight}_{slant}_{underline}"
+            self.text_area.tag_configure(tag_name, font=(family, size, weight, slant, underline))
+            self.text_area.tag_add(tag_name, start, end)
+            self.update_status(f"Applied {format_type}")
+        except tk.TclError:
+            self.update_status("Select text to format")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to format text:\n{e}")
+            print(traceback.format_exc())
+    
+    def choose_text_color(self):
+        color_code = colorchooser.askcolor(title="Choose text color")[1]
+        if color_code:
+            try:
+                # Create a unique tag name for each color
+                tag_name = f"color_{color_code.replace('#', '')}"
+                self.text_area.tag_configure(tag_name, foreground=color_code)
+                self.text_area.tag_add(tag_name, tk.SEL_FIRST, tk.SEL_LAST)
+                self.update_status("Text color applied")
+            except tk.TclError:
+                self.update_status("Select text to change color")
+            except Exception as e:
+                print(f"Error choosing text color: {e}")
+                print(traceback.format_exc())
+    
+    def align_text(self, alignment):
+        try:
+            # Remove existing alignment tags from the selection
+            for tag_name in self.text_area.tag_names(tk.SEL_FIRST):
+                if tag_name.startswith("align_"):
+                    self.text_area.tag_remove(tag_name, tk.SEL_FIRST, tk.SEL_LAST)
+
+            # Apply the new alignment tag
+            tag_name = f"align_{alignment}"
+            self.text_area.tag_configure(tag_name, justify=alignment)
+            self.text_area.tag_add(tag_name, tk.SEL_FIRST, tk.SEL_LAST)
+            self.update_status(f"Text aligned {alignment}")
+        except tk.TclError:
+            self.update_status("Select text to align")
+
+    def spell_check(self):
+        try:
+            selected_text = self.text_area.selection_get()
+            blob = TextBlob(selected_text)
+            corrected = blob.correct()
+            self.text_area.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            self.text_area.insert(tk.SEL_FIRST, str(corrected))
+            self.update_status("Spelling corrected")
+        except tk.TclError:
+            self.update_status("Select text to check spelling")
+        except Exception as e:
+            messagebox.showerror("Error", f"Spell check failed:\n{e}")
+            print(traceback.format_exc())
+            
+    def check_grammar(self):
+        text = self.text_area.get(1.0, tk.END)
+        sentences = sent_tokenize(text)
+        errors = []
+        
+        # Check for common errors
+        for sent in sentences:
+            # Double spaces
+            if "  " in sent:
+                errors.append(f"Double space detected: '{sent.strip()}'")
+            
+            # Capitalization at start of sentence
+            if sent.strip() and not sent.strip()[0].isupper():
+                errors.append(f"Missing capitalization: '{sent.strip()}'")
+            
+            # Repeated words
+            words = sent.split()
+            for i in range(len(words)-1):
+                if words[i] == words[i+1] and words[i].isalpha():
+                    errors.append(f"Repeated word: '{words[i]}' in: '{sent.strip()}'")
+        
+        if errors:
+            message = "\n".join(errors[:10])  # Show first 10 errors
+            if len(errors) > 10:
+                message += f"\n\n... and {len(errors)-10} more issues"
+            messagebox.showwarning("Grammar Check", message)
+        else:
+            messagebox.showinfo("Grammar Check", "No issues found!")
+        self.update_status("Grammar check completed")
+
+    def read_aloud(self):
+        text = self.text_area.get(1.0, tk.END)
+        if text.strip():
+            try:
+                engine = pyttsx3.init()
+                engine.say(text)
+                engine.runAndWait()
+                self.update_status("Reading document aloud")
+            except Exception as e:
+                messagebox.showerror("Error", f"Text-to-speech failed:\n{str(e)}")
+                print(traceback.format_exc())
+        else:
+            self.update_status("Nothing to read aloud.")
+
+    def toggle_voice_notes(self):
+        if self.notes_frame.winfo_ismapped():
+            self.notes_frame.pack_forget()
+            self.update_status("Voice Notes hidden")
+            self.stop_voice_notes()
+        else:
+            self.notes_frame.pack(fill="x", padx=5, pady=5, side="top")
+            self.update_status("Voice Notes shown")
+
+    def start_voice_notes(self):
+        self.is_recording = True
+        self.start_voice_btn.config(state="disabled")
+        self.stop_voice_btn.config(state="normal")
+        self.notes_text.config(state="normal")
+        self.notes_text.insert(tk.END, "Recording started...\n")
+        self.notes_text.config(state="disabled")
+        self.update_status("Voice notes recording in progress...")
+
+    def stop_voice_notes(self):
+        self.is_recording = False
+        self.start_voice_btn.config(state="normal")
+        self.stop_voice_btn.config(state="disabled")
+        self.notes_text.config(state="normal")
+        self.notes_text.insert(tk.END, "Recording stopped.\n")
+        self.notes_text.config(state="disabled")
+        self.update_status("Voice notes recording stopped.")
+
+    def update_word_count(self, event=None):
+        text = self.text_area.get(1.0, tk.END).strip()
+        words = len(text.split())
+        chars = len(text)
+        lines = text.count('\n') + 1 if text else 0
+        self.wp_status.config(text=f"Words: {words} | Characters: {chars} | Lines: {lines}")
+
+    # ========================
+    # SPREADSHEET FUNCTIONS
+    # ========================
+    def create_spreadsheet(self):
+        toolbar = ttk.Frame(self.spreadsheet_frame)
+        toolbar.pack(fill="x", padx=5, pady=5)
+        ttk.Button(toolbar, text="📂 Open CSV", command=self.open_csv).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="💾 Save CSV", command=self.save_csv).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="⟳ Recalculate", command=self.recalculate).pack(side="left", padx=(20, 2))
+        ttk.Button(toolbar, text="❓ Explain Cell", command=self.explain_cell).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="➕ Add Column", command=self.add_column).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="➖ Remove Column", command=self.remove_column).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="🧮 Pivot Table", command=self.show_pivot_dialog).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="📊 Insert Chart", command=self.show_chart_dialog).pack(side="left", padx=2)
+
+        # Create spreadsheet table
+        table_frame = ttk.Frame(self.spreadsheet_frame)
+        table_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Create a treeview with scrollbars
+        self.spreadsheet = ttk.Treeview(table_frame, show="headings", selectmode="browse")
+        self.spreadsheet.pack(side="left", fill="both", expand=True)
+
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.spreadsheet.yview)
+        vsb.pack(side="right", fill="y")
+        hsb = ttk.Scrollbar(self.spreadsheet_frame, orient="horizontal", command=self.spreadsheet.xview)
+        hsb.pack(side="bottom", fill="x")
+
+        self.spreadsheet.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        # Initialize with some columns
+        self.columns = ["A", "B", "C", "D", "E"]
+        self.spreadsheet["columns"] = self.columns
+        for col in self.columns:
+            self.spreadsheet.heading(col, text=col)
+            self.spreadsheet.column(col, width=100)
+
+        # Add sample data
+        for i in range(1, 21):
+            self.spreadsheet.insert("", "end", iid=f"row{i}", values=[f"Row {i}", i, i*2, i*3, f"=SUM(B{i}:D{i})"])
+
+        # Bind double click for editing
+        self.spreadsheet.bind("<Double-1>", self.on_cell_double_click)
+
+    def open_csv(self):
+        file_path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")])
+        if file_path:
+            try:
+                self.df = pd.read_csv(file_path)
+                self.update_spreadsheet_display()
+                self.update_status(f"CSV opened: {os.path.basename(file_path)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to open CSV:\n{str(e)}")
+                print(traceback.format_exc())
+
+    def save_csv(self):
+        file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")])
+        if file_path:
+            try:
+                # Update DataFrame from Treeview before saving
+                current_data = []
+                for item_id in self.spreadsheet.get_children():
+                    current_data.append(self.spreadsheet.item(item_id, 'values'))
+                
+                # Ensure column headers are correctly set
+                if current_data:
+                    self.df = pd.DataFrame(current_data, columns=self.columns)
+                else:
+                    self.df = pd.DataFrame(columns=self.columns)
+
+                self.df.to_csv(file_path, index=False)
+                self.update_status(f"CSV saved: {os.path.basename(file_path)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save CSV:\n{str(e)}")
+                print(traceback.format_exc())
+
+    def update_spreadsheet_display(self):
+        # Clear existing data
+        for item in self.spreadsheet.get_children():
+            self.spreadsheet.delete(item)
+
+        # Update columns
+        self.columns = list(self.df.columns)
+        self.spreadsheet["columns"] = self.columns
+        for col in self.columns:
+            self.spreadsheet.heading(col, text=col)
+            self.spreadsheet.column(col, width=100)
+
+        # Populate with new data
+        for _, row in self.df.iterrows():
+            self.spreadsheet.insert("", "end", values=list(row))
+        self.update_status("Spreadsheet display updated.")
+
+    def on_cell_double_click(self, event):
+        region = self.spreadsheet.identify("region", event.x, event.y)
+        if region == "heading":
+            return
+
+        column = self.spreadsheet.identify_column(event.x)
+        row_id = self.spreadsheet.identify_row(event.y)
+
+        if not row_id or not column:
+            return
+
+        col_index = int(column.replace("#", "")) - 1
+        current_value = self.spreadsheet.item(row_id, "values")[col_index]
+
+        entry = ttk.Entry(self.spreadsheet)
+        entry.insert(0, current_value)
+        entry.focus()
+
+        # Position the entry widget over the cell
+        x, y, width, height = self.spreadsheet.bbox(row_id, column)
+        entry.place(x=x, y=y, width=width, height=height)
+
+        def on_entry_leave(event):
+            new_value = entry.get()
+            current_values = list(self.spreadsheet.item(row_id, "values"))
+            current_values[col_index] = new_value
+            self.spreadsheet.item(row_id, values=current_values)
+            entry.destroy()
+            self.recalculate()
+
+        entry.bind("<FocusOut>", on_entry_leave)
+        entry.bind("<Return>", on_entry_leave)
+
+    def recalculate(self):
+        # This is a simplified recalculation, assuming basic formulas like SUM
+        updated_data = []
+        for row_id in self.spreadsheet.get_children():
+            row_values = list(self.spreadsheet.item(row_id, 'values'))
+            for i, cell_value in enumerate(row_values):
+                if isinstance(cell_value, str) and cell_value.startswith("="):
+                    try:
+                        formula = cell_value[1:]
+                        if formula.upper().startswith("SUM("):
+                            range_str = formula[4:-1]
+                            start_col_char, start_row_str, end_col_char, end_row_str = re.split(r'(\d+):', range_str.upper())
+                            
+                            start_col_idx = ord(start_col_char) - ord('A')
+                            end_col_idx = ord(end_col_char) - ord('A')
+                            start_row_idx = int(start_row_str) - 1
+                            end_row_idx = int(end_row_str) - 1
+
+                            current_sum = 0
+                            for r_idx in range(start_row_idx, end_row_idx + 1):
+                                item_id_to_sum = self.spreadsheet.get_children()[r_idx]
+                                cells_in_row = self.spreadsheet.item(item_id_to_sum, 'values')
+                                for c_idx in range(start_col_idx, end_col_idx + 1):
+                                    try:
+                                        current_sum += float(cells_in_row[c_idx])
+                                    except (ValueError, IndexError):
+                                        pass
+                            row_values[i] = current_sum
+                    except Exception as e:
+                        row_values[i] = f"ERROR: {e}"
+                        print(f"Error recalculating cell: {e}")
+                        print(traceback.format_exc())
+            updated_data.append(row_values)
+        
+        # Clear and re-populate the treeview
+        for item in self.spreadsheet.get_children():
+            self.spreadsheet.delete(item)
+        for row_data in updated_data:
+            self.spreadsheet.insert("", "end", values=row_data)
+        
+        self.update_status("Spreadsheet recalculated.")
+
+    def explain_cell(self):
+        selected_item = self.spreadsheet.focus()
+        if not selected_item:
+            self.update_status("Select a cell to explain.")
+            return
+
+        column = self.spreadsheet.identify_column(self.spreadsheet.winfo_pointerx() - self.spreadsheet.winfo_rootx())
+        row_id = self.spreadsheet.identify_row(self.spreadsheet.winfo_pointery() - self.spreadsheet.winfo_rooty())
+
+        if not row_id or not column:
+            self.update_status("Select a cell to explain.")
+            return
+        
+        col_index = int(column.replace("#", "")) - 1
+        current_value = self.spreadsheet.item(row_id, "values")[col_index]
+
+        explanation = f"Value: {current_value}\n"
+        
+        if isinstance(current_value, str) and current_value.startswith("="):
+            explanation += f"This is a formula: {current_value[1:]}\n"
+            explanation += "Currently, only basic SUM formulas are supported for live calculation display."
+        else:
+            try:
+                num_val = float(current_value)
+                if num_val == 0:
+                    explanation += "This is a numeric value: Zero.\n"
+                elif num_val > 0:
+                    explanation += "This is a positive numeric value.\n"
+                else:
+                    explanation += "This is a negative numeric value.\n"
+                explanation += f"Type: {type(num_val).__name__}"
+            except ValueError:
+                explanation += "This is text data.\n"
+                explanation += f"Length: {len(str(current_value))} characters"
+            except Exception as e:
+                explanation += f"Could not determine type: {e}"
+
+        messagebox.showinfo("Cell Explanation", explanation)
+        self.update_status("Cell explanation provided.")
+            
+    def add_column(self):
+        new_col_name = simpledialog.askstring("Add Column", "Enter new column name:")
+        if new_col_name:
+            if new_col_name in self.columns:
+                messagebox.showwarning("Warning", "Column with this name already exists.")
+                return
+            
+            self.df[new_col_name] = ""
+            self.update_spreadsheet_display()
+            self.update_status(f"Column '{new_col_name}' added.")
+
+    def remove_column(self):
+        if not self.columns:
+            self.update_status("No columns to remove.")
+            return
+        
+        col_to_remove = simpledialog.askstring("Remove Column", "Enter column name to remove:")
+        if col_to_remove and col_to_remove in self.columns:
+            try:
+                self.df = self.df.drop(columns=[col_to_remove])
+                self.update_spreadsheet_display()
+                self.update_status(f"Column '{col_to_remove}' removed.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to remove column:\n{e}")
+                print(traceback.format_exc())
+        elif col_to_remove:
+            messagebox.showwarning("Warning", f"Column '{col_to_remove}' not found.")
+
+    def show_pivot_dialog(self):
+        if self.df.empty:
+            self.update_status("No data for pivot table.")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Create Pivot Table")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Index (Rows):").pack(padx=5, pady=2)
+        index_col = ttk.Combobox(dialog, values=self.columns, state="readonly")
+        index_col.pack(padx=5, pady=2)
+
+        ttk.Label(dialog, text="Columns:").pack(padx=5, pady=2)
+        columns_col = ttk.Combobox(dialog, values=self.columns, state="readonly")
+        columns_col.pack(padx=5, pady=2)
+
+        ttk.Label(dialog, text="Values:").pack(padx=5, pady=2)
+        values_col = ttk.Combobox(dialog, values=self.columns, state="readonly")
+        values_col.pack(padx=5, pady=2)
+
+        def create_pivot():
+            idx = index_col.get()
+            cols = columns_col.get()
+            vals = values_col.get()
+
+            if not all([idx, vals]):
+                messagebox.showwarning("Input Error", "Index and Values fields are required.")
+                return
+
+            try:
+                pivot_df = pd.pivot_table(self.df, values=vals, index=idx, columns=cols, aggfunc='sum')
+                
+                pivot_window = tk.Toplevel(self.root)
+                pivot_window.title("Pivot Table Result")
+                pivot_text = scrolledtext.ScrolledText(pivot_window, wrap="word", font=("Courier New", 10))
+                pivot_text.pack(fill="both", expand=True, padx=5, pady=5)
+                pivot_text.insert(tk.END, pivot_df.to_string())
+                pivot_text.config(state="disabled")
+
+                self.update_status("Pivot table created.")
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Pivot Error", f"Failed to create pivot table:\n{e}")
+                print(traceback.format_exc())
+
+        ttk.Button(dialog, text="Generate Pivot", command=create_pivot).pack(pady=10)
+
+    def show_chart_dialog(self):
+        if self.df.empty:
+            self.update_status("No data for charting.")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Create Chart")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="X-axis (Category):").pack(padx=5, pady=2)
+        x_axis_col = ttk.Combobox(dialog, values=self.columns, state="readonly")
+        x_axis_col.pack(padx=5, pady=2)
+
+        ttk.Label(dialog, text="Y-axis (Value):").pack(padx=5, pady=2)
+        y_axis_col = ttk.Combobox(dialog, values=self.columns, state="readonly")
+        y_axis_col.pack(padx=5, pady=2)
+        
+        ttk.Label(dialog, text="Chart Type:").pack(padx=5, pady=2)
+        chart_type = ttk.Combobox(dialog, values=["Bar", "Line", "Scatter"], state="readonly")
+        chart_type.set("Bar")
+        chart_type.pack(padx=5, pady=2)
+
+        def create_chart():
+            x_col = x_axis_col.get()
+            y_col = y_axis_col.get()
+            c_type = chart_type.get()
+
+            if not all([x_col, y_col, c_type]):
+                messagebox.showwarning("Input Error", "All fields are required.")
+                return
+
+            try:
+                plot_data = self.df[[x_col, y_col]].copy()
+                plot_data[y_col] = pd.to_numeric(plot_data[y_col], errors='coerce')
+                plot_data.dropna(subset=[y_col], inplace=True)
+
+                if plot_data.empty:
+                    messagebox.showwarning("No Data", "No numeric data available for charting with selected columns.")
+                    return
+
+                fig, ax = plt.subplots(figsize=(6, 4))
+
+                if c_type == "Bar":
+                    ax.bar(plot_data[x_col], plot_data[y_col])
+                elif c_type == "Line":
+                    ax.plot(plot_data[x_col], plot_data[y_col])
+                elif c_type == "Scatter":
+                    ax.scatter(plot_data[x_col], plot_data[y_col])
+
+                ax.set_xlabel(x_col)
+                ax.set_ylabel(y_col)
+                ax.set_title(f"{c_type} Chart of {y_col} by {x_col}")
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+
+                chart_window = tk.Toplevel(self.root)
+                chart_window.title("Generated Chart")
+                canvas = FigureCanvasTkAgg(fig, master=chart_window)
+                canvas_widget = canvas.get_tk_widget()
+                canvas_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+                canvas.draw()
+
+                self.update_status(f"{c_type} chart created.")
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Chart Error", f"Failed to create chart:\n{e}")
+                print(traceback.format_exc())
+
+        ttk.Button(dialog, text="Generate Chart", command=create_chart).pack(pady=10)
+
+    # ========================
+    # SLIDE CREATOR FUNCTIONS
+    # ========================
+    def create_slide_creator(self):
+        # Toolbar for Slide Pro
+        toolbar = ttk.Frame(self.slide_frame)
+        toolbar.pack(fill="x", padx=5, pady=5)
+
+        ttk.Button(toolbar, text="➕ New Slide", command=self.new_slide).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="🗑️ Delete Slide", command=self.delete_slide).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="◀️ Previous", command=self.prev_slide).pack(side="left", padx=(20, 2))
+        ttk.Button(toolbar, text="▶️ Next", command=self.next_slide).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="🖼️ Insert Image", command=self.insert_slide_image).pack(side="left", padx=2) 
+        ttk.Button(toolbar, text="🔊 Speak Slide", command=self.speak_slide).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Save Presentation", command=self.save_presentation).pack(side="left", padx=(20, 2))
+        ttk.Button(toolbar, text="Load Presentation", command=self.load_presentation).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Export to PDF", command=self.export_presentation_to_pdf).pack(side="left", padx=2)
+
+        # Slide content area
+        content_frame = ttk.Frame(self.slide_frame)
+        content_frame.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Title entry
+        ttk.Label(content_frame, text="Slide Title:").pack(side="top", anchor="w")
+        self.slide_title_entry = ttk.Entry(content_frame, font=("Arial", 16, "bold"))
+        self.slide_title_entry.pack(fill="x", pady=2)
+        self.slide_title_entry.bind("<KeyRelease>", self.save_current_slide)
+
+        # Content text area
+        ttk.Label(content_frame, text="Slide Content:").pack(side="top", anchor="w", pady=(10, 0))
+        self.slide_content_text = scrolledtext.ScrolledText(
+            content_frame, wrap="word", font=("Arial", 12), height=10
+        )
+        self.slide_content_text.pack(fill="both", expand=True, pady=2)
+        self.slide_content_text.bind("<KeyRelease>", self.save_current_slide)
+        self.slide_content_text.bind("<FocusOut>", self.save_current_slide)
+
+        # Slide number label
+        self.slide_number_label = ttk.Label(self.slide_frame, text="Slide 0/0")
+        self.slide_number_label.pack(side="bottom", fill="x", padx=5, pady=2)
+
+        # Canvas for image preview/manipulation
+        self.preview_canvas = tk.Canvas(self.slide_frame, bg="white", relief="sunken", borderwidth=1)
+        self.preview_canvas.pack(fill="both", expand=True, padx=5, pady=5)
+        self.preview_canvas.bind("<ButtonPress-1>", self.start_drag_slide_image)
+        self.preview_canvas.bind("<B1-Motion>", self.drag_slide_image)
+        self.preview_canvas.bind("<ButtonRelease-1>", self.stop_drag_slide_image)
+        self.preview_canvas.bind("<MouseWheel>", self.resize_slide_image)
+        self.preview_canvas.bind("<Button-1>", self.select_slide_image)
+
+        # Internal slide data structure
+        self.slides = []
+        self.current_slide = -1
+        self.new_slide()
+
+    def new_slide(self):
+        self.save_current_slide()
+        self.slides.append(("", [], []))
+        self.current_slide = len(self.slides) - 1
+        self.load_current_slide()
+        self.update_status("New slide created.")
+
+    def delete_slide(self):
+        if len(self.slides) <= 1:
+            messagebox.showwarning("Warning", "Cannot delete the last slide.")
+            return
+
+        if messagebox.askyesno("Delete Slide", "Are you sure you want to delete this slide?"):
+            self.slides.pop(self.current_slide)
+            if self.current_slide >= len(self.slides):
+                self.current_slide = len(self.slides) - 1
+            self.load_current_slide()
+            self.update_status("Slide deleted.")
+
+    def save_current_slide(self, event=None):
+        if self.current_slide != -1:
+            title = self.slide_title_entry.get()
+            content = self.slide_content_text.get(1.0, tk.END).strip().split('\n')
+            
+            saved_images_info = []
+            if self.current_slide in self.slide_images:
+                canvas_width = self.preview_canvas.winfo_width()
+                canvas_height = self.preview_canvas.winfo_height()
+                for tk_img_obj, old_x_norm, old_y_norm in self.slide_images[self.current_slide]:
+                    coords = self.preview_canvas.coords(self.canvas_images[(self.current_slide, self.slide_images[self.current_slide].index((tk_img_obj, old_x_norm, old_y_norm)))])
+                    if coords:
+                        x_center = coords[0] + tk_img_obj.width() / 2
+                        y_center = coords[1] + tk_img_obj.height() / 2
+                        x_norm = x_center / canvas_width
+                        y_norm = y_center / canvas_height
+                        saved_images_info.append((getattr(tk_img_obj, 'source_path', None), x_norm, y_norm, tk_img_obj.width(), tk_img_obj.height()))
+
+            self.slides[self.current_slide] = (title, content, saved_images_info)
+            self.update_slide_number_label()
+    
+    def load_current_slide(self):
+        if not self.slides:
+            self.slide_title_entry.delete(0, tk.END)
+            self.slide_content_text.delete(1.0, tk.END)
+            self.preview_canvas.delete("all")
+            self.update_slide_number_label()
+            return
+
+        title, content, images_info = self.slides[self.current_slide]
+
+        self.slide_title_entry.delete(0, tk.END)
+        self.slide_title_entry.insert(0, title)
+
+        self.slide_content_text.delete(1.0, tk.END)
+        self.slide_content_text.insert(1.0, "\n".join(content))
+
+        self.preview_canvas.delete("all")
+        self.slide_images[self.current_slide] = []
+        self.canvas_images = {}
+
+        # Load and display images
+        for path, x_norm, y_norm, original_width, original_height in images_info:
+            if path and os.path.exists(path):
+                pil_img = Image.open(path)
+                pil_img = pil_img.resize((original_width, original_height), Image.Resampling.LANCZOS)
+                tk_img = ImageTk.PhotoImage(pil_img)
+                tk_img.source_path = path
+                self.slide_images[self.current_slide].append((tk_img, x_norm, y_norm))
+                
+                self.root.update_idletasks()
+                canvas_width = self.preview_canvas.winfo_width()
+                canvas_height = self.preview_canvas.winfo_height()
+
+                x = x_norm * canvas_width - tk_img.width() / 2
+                y = y_norm * canvas_height - tk_img.height() / 2
+
+                canvas_img_id = self.preview_canvas.create_image(x, y, anchor="nw", image=tk_img)
+                self.canvas_images[(self.current_slide, len(self.slide_images[self.current_slide]) - 1)] = canvas_img_id
+                self.preview_canvas.tag_bind(canvas_img_id, "<ButtonPress-1>", self.start_drag_slide_image)
+                self.preview_canvas.tag_bind(canvas_img_id, "<B1-Motion>", self.drag_slide_image)
+                self.preview_canvas.tag_bind(canvas_img_id, "<ButtonRelease-1>", self.stop_drag_slide_image)
+
+        self.update_slide_number_label()
+        self.update_status(f"Loaded slide {self.current_slide + 1}")
+
+    def prev_slide(self):
+        self.save_current_slide()
+        if self.current_slide > 0:
+            self.current_slide -= 1
+            self.load_current_slide()
+        else:
+            self.update_status("Already on the first slide.")
+
+    def next_slide(self):
+        self.save_current_slide()
+        if self.current_slide < len(self.slides) - 1:
+            self.current_slide += 1
+            self.load_current_slide()
+        else:
+            self.update_status("Already on the last slide.")
+
+    def update_slide_number_label(self):
+        self.slide_number_label.config(text=f"Slide {self.current_slide + 1}/{len(self.slides)}")
+
+    def insert_slide_image(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif")])
+        if file_path:
+            try:
+                pil_img = Image.open(file_path)
+                pil_img.thumbnail((400, 400), Image.Resampling.LANCZOS)
+                tk_img = ImageTk.PhotoImage(pil_img)
+                tk_img.source_path = file_path
+
+                if self.current_slide == -1:
+                    self.new_slide()
+
+                self.slide_images.setdefault(self.current_slide, []).append((tk_img, 0.5, 0.5))
+                self.update_preview()
+                self.update_status("Image inserted into slide.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to insert image:\n{str(e)}")
+                print(traceback.format_exc())
+
+    def update_preview(self):
+        self.preview_canvas.delete("all")
+        if self.current_slide in self.slide_images:
+            canvas_width = self.preview_canvas.winfo_width()
+            canvas_height = self.preview_canvas.winfo_height()
+            
+            if canvas_width == 0 or canvas_height == 0:
+                self.root.update_idletasks()
+                canvas_width = self.preview_canvas.winfo_width()
+                canvas_height = self.preview_canvas.winfo_height()
+                if canvas_width == 0 or canvas_height == 0:
+                    return
+
+            for i, (tk_img, x_norm, y_norm) in enumerate(self.slide_images[self.current_slide]):
+                x = x_norm * canvas_width - tk_img.width() / 2
+                y = y_norm * canvas_height - tk_img.height() / 2
+                canvas_img_id = self.preview_canvas.create_image(x, y, anchor="nw", image=tk_img)
+                self.canvas_images[(self.current_slide, i)] = canvas_img_id
+                self.preview_canvas.tag_bind(canvas_img_id, "<ButtonPress-1>", self.start_drag_slide_image)
+                self.preview_canvas.tag_bind(canvas_img_id, "<B1-Motion>", self.drag_slide_image)
+                self.preview_canvas.tag_bind(canvas_img_id, "<ButtonRelease-1>", self.stop_drag_slide_image)
+
+    def start_drag_slide_image(self, event):
+        self.drag_data["img_id"] = self.preview_canvas.find_closest(event.x, event.y)[0]
+        self.drag_data["x"] = event.x
+        self.drag_data["y"] = event.y
+
+    def drag_slide_image(self, event):
+        if self.drag_data["img_id"]:
+            delta_x = event.x - self.drag_data["x"]
+            delta_y = event.y - self.drag_data["y"]
+            self.preview_canvas.move(self.drag_data["img_id"], delta_x, delta_y)
+            self.drag_data["x"] = event.x
+            self.drag_data["y"] = event.y
+
+    def stop_drag_slide_image(self, event):
+        if self.drag_data["img_id"]:
+            for (slide_idx, img_idx), canvas_id in self.canvas_images.items():
+                if canvas_id == self.drag_data["img_id"] and slide_idx == self.current_slide:
+                    x1, y1, x2, y2 = self.preview_canvas.bbox(canvas_id)
+                    center_x = (x1 + x2) / 2
+                    center_y = (y1 + y2) / 2
+                    
+                    canvas_width = self.preview_canvas.winfo_width()
+                    canvas_height = self.preview_canvas.winfo_height()
+
+                    if canvas_width > 0 and canvas_height > 0:
+                        x_norm = center_x / canvas_width
+                        y_norm = center_y / canvas_height
+                        current_tk_img, _, _ = self.slide_images[slide_idx][img_idx]
+                        self.slide_images[slide_idx][img_idx] = (current_tk_img, x_norm, y_norm)
+                    break
+        self.drag_data["img_id"] = None
+        self.save_current_slide()
+
+    def select_slide_image(self, event):
+        item_id = self.preview_canvas.find_closest(event.x, event.y)
+        if item_id:
+            self.selected_slide_image_id = item_id[0]
+            self.update_status(f"Selected image on canvas (ID: {self.selected_slide_image_id})")
+        else:
+            self.selected_slide_image_id = None
+            self.update_status("No image selected on canvas.")
+
+    def resize_slide_image(self, event):
+        if not event.state & 0x0004:  # Ctrl key must be held
+            return
+        
+        if not self.selected_slide_image_id:
+            self.update_status("No slide image selected for resizing.")
+            return
+
+        found_img_obj = None
+        current_img_idx_in_list = -1
+        for i, (tk_img, x_norm, y_norm) in enumerate(self.slide_images.get(self.current_slide, [])):
+            if (self.current_slide, i) in self.canvas_images and \
+               self.canvas_images[(self.current_slide, i)] == self.selected_slide_image_id:
+                found_img_obj = tk_img
+                current_img_idx_in_list = i
+                break
+
+        if not found_img_obj or not hasattr(found_img_obj, 'source_path') or found_img_obj.source_path is None:
+            messagebox.showwarning("Resize Error", "Cannot resize this image. Original source path not found.")
+            return
+
+        try:
+            pil_img = Image.open(found_img_obj.source_path)
+            scale = 1.1 if event.delta > 0 else 0.9
+            
+            current_width = found_img_obj.width()
+            current_height = found_img_obj.height()
+
+            new_size = (
+                max(50, int(current_width * scale)),
+                max(50, int(current_height * scale))
+            )
+            
+            pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
+            new_tk_img = ImageTk.PhotoImage(pil_img)
+            new_tk_img.source_path = found_img_obj.source_path
+            
+            x, y = self.preview_canvas.coords(self.selected_slide_image_id)
+            
+            self.preview_canvas.delete(self.selected_slide_image_id)
+            new_canvas_img_id = self.preview_canvas.create_image(x, y, anchor="nw", image=new_tk_img)
+
+            current_x_norm, current_y_norm = self.slide_images[self.current_slide][current_img_idx_in_list][1:]
+            self.slide_images[self.current_slide][current_img_idx_in_list] = (new_tk_img, current_x_norm, current_y_norm)
+            self.canvas_images[(self.current_slide, current_img_idx_in_list)] = new_canvas_img_id
+            self.selected_slide_image_id = new_canvas_img_id
+
+            self.update_status("Slide image resized.")
+            self.save_current_slide()
+        except Exception as e:
+            messagebox.showerror("Resize failed", f"Could not resize slide image:\n{e}")
+            print(traceback.format_exc())
+
+    def speak_slide(self):
+        if self.current_slide != -1:
+            self.save_current_slide()
+            title, content, _ = self.slides[self.current_slide]
+            if title or any(content):
+                try:
+                    engine = pyttsx3.init()
+                    engine.say(f"Slide title: {title}")
+                    if content:
+                        engine.say("Slide content:")
+                        for line in content:
+                            if line.strip():
+                                clean_line = re.sub(r'^[-*•]\s*', '', line)
+                                engine.say(clean_line)
+                    engine.runAndWait()
+                    self.update_status("Speaking slide content")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Text-to-speech failed:\n{str(e)}")
+                    print(traceback.format_exc())
+            else:
+                self.update_status("Slide is empty, nothing to speak.")
+        else:
+            self.update_status("No slides to speak.")
+
+    def save_presentation(self):
+        file_path = filedialog.asksaveasfilename(defaultextension=".pppro",
+                                             filetypes=[("PyOffice Pro Presentation", "*.pppro")])
+        if not file_path:
+            return
+
+        self.save_current_slide()
+        
+        serializable_slides = []
+        for title, content, images_info in self.slides:
+            serializable_slides.append({
+                "title": title,
+                "content": content,
+                "images": images_info
+            })
+        
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(serializable_slides, f, indent=4)
+            self.update_status("Presentation saved.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save presentation:\n{str(e)}")
+            print(traceback.format_exc())
+
+    def load_presentation(self):
+        file_path = filedialog.askopenfilename(filetypes=[("PyOffice Pro Presentation", "*.pppro")])
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                loaded_slides_data = json.load(f)
+            
+            self.slides = []
+            self.slide_images = {}
+            self.canvas_images = {}
+            self.temp_image_files = []
+
+            for slide_data in loaded_slides_data:
+                title = slide_data.get("title", "")
+                content = slide_data.get("content", [])
+                images_raw_info = slide_data.get("images", [])
+                
+                current_slide_images = []
+                processed_images_info = []
+
+                for path, x_norm, y_norm, width, height in images_raw_info:
+                    if path and os.path.exists(path):
+                        pil_img = Image.open(path)
+                        pil_img = pil_img.resize((width, height), Image.Resampling.LANCZOS)
+                        tk_img = ImageTk.PhotoImage(pil_img)
+                        tk_img.source_path = path
+                        current_slide_images.append((tk_img, x_norm, y_norm))
+                        processed_images_info.append((path, x_norm, y_norm, width, height))
+                    else:
+                        self.update_status(f"Warning: Image not found at {path} for slide.")
+                        processed_images_info.append((None, x_norm, y_norm, width, height))
+
+                self.slides.append((title, content, processed_images_info))
+                self.slide_images[len(self.slides) - 1] = current_slide_images
+
+            self.current_slide = 0 if self.slides else -1
+            self.load_current_slide()
+            self.update_status("Presentation loaded.")
+
+        except json.JSONDecodeError:
+            messagebox.showerror("Error", "Failed to load presentation: Invalid file format.")
+            print(traceback.format_exc())
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load presentation:\n{str(e)}")
+            print(traceback.format_exc())
+
+    def export_presentation_to_pdf(self):
+        file_path = filedialog.asksaveasfilename(defaultextension=".pdf",
+                                             filetypes=[("PDF Files", "*.pdf")])
+        if not file_path:
+            return
+
+        self.save_current_slide()
+
+        try:
+            c = pdf_canvas.Canvas(file_path, pagesize=landscape(A4))
+            width, height = landscape(A4)
+
+            for i, (title, content, images_info) in enumerate(self.slides):
+                if i > 0:
+                    c.showPage()
+
+                c.setFont("Helvetica-Bold", 24)
+                c.drawString(50, height - 50, title)
+
+                c.setFont("Helvetica", 12)
+                textobject = c.beginText(50, height - 100)
+                for line in content:
+                    textobject.textLine(line)
+                c.drawText(textobject)
+
+                # Add images to PDF
+                for img_path, x_norm, y_norm, img_width, img_height in images_info:
+                    if img_path and os.path.exists(img_path):
+                        try:
+                            img_x_pdf = x_norm * width - img_width / 2
+                            img_y_pdf = y_norm * height - img_height / 2
+                            
+                            c.drawImage(ImageReader(img_path), img_x_pdf, img_y_pdf, 
+                                        width=img_width, height=img_height, preserveAspectRatio=True)
+                        except Exception as img_e:
+                            print(f"Error embedding image {img_path} in PDF: {img_e}")
+                            print(traceback.format_exc())
+                
+            c.save()
+            self.update_status("Presentation exported to PDF.")
+            messagebox.showinfo("Export Successful", f"Presentation saved to {file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export presentation to PDF:\n{str(e)}")
+            print(traceback.format_exc())
+
+    def show_about(self):
+        about_window = tk.Toplevel(self.root)
+        about_window.title("About PyOffice Pro")
+        about_window.geometry("400x300")
+        about_window.resizable(False, False)
+        
+        # Header with app name
+        header = tk.Label(about_window, text="PyOffice Pro", font=("Arial", 20, "bold"))
+        header.pack(pady=10)
+        
+        # Version info
+        version = tk.Label(about_window, text="Version 1.0", font=("Arial", 12))
+        version.pack()
+        
+        # Developer info
+        developer = tk.Label(about_window, text="Developed by Syed Samiullah", font=("Arial", 12))
+        developer.pack(pady=10)
+        
+        # GitHub link
+        github = tk.Label(about_window, text="GitHub: github.com/syedsamiullah45", 
+                         font=("Arial", 12), fg="blue", cursor="hand2")
+        github.pack(pady=5)
+        github.bind("<Button-1>", lambda e: os.system("start https://github.com/syedsamiullah45"))
+        
+        # Description
+        desc = tk.Label(about_window, text="A comprehensive office suite with word processing,\nspreadsheet, and presentation capabilities.", 
+                       font=("Arial", 11), justify="center")
+        desc.pack(pady=20)
+        
+        # Close button
+        ttk.Button(about_window, text="Close", command=about_window.destroy).pack(pady=10)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.withdraw()  # Hide main root window for now
+    show_splash_screen(root)  # Show splash first
+    root.after(2600, lambda: (
+        root.deiconify(),  # Show main app after splash
+        PyOfficePro(root)
+    ))
+    root.mainloop()
